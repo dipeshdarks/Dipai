@@ -1,0 +1,16 @@
+{
+  "prompt": "A white dove, oh yes,\nShe carries joy in her wings.\nHer flight down low doesn’t matter,\nFor she never leaves behind.\n\nA feather floats high in the sky,\nThe breeze gently sweeps over it.\nBirds flying with joy take center stage,\nNature's magic shows its best.\n\nIn fields, birds dive into the sun,\nTo find peace even deep in winter months.\nBirdsong fills the air, wild and free,\nFor nature is full of beauty and grace.\n\nSo, let all creatures be blessed,\nBy making beautiful art around home.\nLet all beings dance and sing at heart,\nAs they seek to capture our hearts. ;\nWe all must learn how to appreciate and care for each other. . . .",
+  "negative_prompt": "blurry, low quality, deformed, disfigured, watermark, text, signature, extra limbs, bad anatomy, oversaturated, plastic",
+  "width": 512,
+  "height": 512,
+  "steps": 25,
+  "guidance_scale": 7.5,
+  "seed": 94052699,
+  "model_id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+  "device": "cuda",
+  "dtype": "float16",
+  "generator": "dipai.imagegen",
+  "created_utc": "2026-10-26T12:24:35.669050+00:00",
+  "estimated_vram_bytes": 3946001201,
+  "generation_seconds": 19.89
+}

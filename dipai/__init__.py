@@ -10,9 +10,12 @@ __author__ = "DIPDARKS"
 
 from dipai.config import (
     FinetuneConfig,
+    ImageGenConfig,
     ScratchConfig,
     VisionConfig,
+    default_imagegen_config,
     load_finetune_config,
+    load_imagegen_config,
     load_scratch_config,
     load_vision_config,
     set_seed,
@@ -22,11 +25,14 @@ from dipai.hardware import HardwareInfo, get_device, probe_hardware
 __all__ = [
     "FinetuneConfig",
     "HardwareInfo",
+    "ImageGenConfig",
     "ScratchConfig",
     "VisionConfig",
     "__version__",
+    "default_imagegen_config",
     "get_device",
     "load_finetune_config",
+    "load_imagegen_config",
     "load_scratch_config",
     "load_vision_config",
     "probe_hardware",

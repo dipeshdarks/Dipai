@@ -24,6 +24,7 @@ machine.
 - [Chat](#chat)
 - [Web UI](#web-ui)
 - [Image understanding (vision)](#image-understanding-vision)
+- [Image generation (text-to-image)](#image-generation-text-to-image)
 - [Testing](#testing)
 - [Project layout](#project-layout)
 - [Documentation](#documentation)
@@ -59,11 +60,15 @@ machine.
   right inference backend; `--list-models` in both CLIs.
 - **Chat** — streaming terminal chat with multi-turn memory, sampling
   controls, and optional LoRA adapter.
-- **Web UI** — Gradio app with a streaming chat tab and an image-understanding
-  tab.
+- **Web UI** — Gradio app with a streaming chat tab, an image-understanding
+  tab, and an image-generation tab.
 - **Image understanding** — SmolVLM-256M-Instruct (Apache-2.0) loaded lazily;
   upload a JPEG/PNG/WebP and ask a question. The text chat never pays the
   memory cost of the vision model.
+- **Image generation (text-to-image)** — Stable Diffusion 1.5 via diffusers,
+  fp16 + attention slicing on the same 4 GB GPU; seed-reproducible PNGs with
+  a JSON metadata sidecar; weights download (or resume) without loading the
+  pipeline, so a low-RAM machine can prefetch first.
 - **Memory-aware** — hardware probing, VRAM budgeting, `low_cpu_mem_usage`,
   and CUDA-OOM fallback to CPU are built in, because the target machine is a
   4 GB laptop GPU.
@@ -146,6 +151,7 @@ Configs live in `configs/`:
 | `sft_oasst.yaml` | supervised fine-tune on OpenAssistant |
 | `finetune.yaml` | LoRA/QLoRA fine-tune |
 | `vision.yaml` | vision model / image limits |
+| `imagegen.yaml` | text-to-image model, size/steps/CFG, download gates |
 
 Estimate the parameter count of a config before committing to a run:
 
@@ -230,6 +236,7 @@ Precedence: `--model` > `--adapter` > `--ckpt`. Slash commands in the REPL:
 ```bat
 python -m webui.app                      # http://127.0.0.1:7860
 python -m webui.app --vision-config configs\vision.yaml
+python -m webui.app --imagegen-config configs\imagegen.yaml
 python -m webui.app --model scratch      # any registry name or model dir
 python -m webui.app --list-models
 ```
@@ -237,11 +244,19 @@ python -m webui.app --list-models
 Eager vision loading is a config key (`load_on_startup` in
 `configs/vision.yaml`), not a CLI flag.
 
-Two tabs:
+Three tabs:
 
-- **Chat** — streaming text chat with per-request sampling controls and a
-  stop button.
+- **Chat** — streaming text chat with per-request sampling controls, a stop
+  button, and an optional system prompt (Settings accordion).
 - **Image understanding** — upload an image, type a question, get an answer.
+- **Image generation** — prompt + negative prompt, size/steps/CFG/seed
+  controls; GENERATE streams progress; DOWNLOAD MODEL prefetches weights;
+  UNLOAD MODEL frees the VRAM. See the next section.
+
+The vision model and the diffusion pipeline each load lazily on first use;
+the text tab works whether or not either is ever loaded. Text chat and image
+generation share the GPU — generate an image, then unload it (or vice versa)
+if VRAM is tight.
 
 The vision model loads lazily on first use (or eagerly with the flag above);
 the text tab works whether or not it is ever loaded.
@@ -273,23 +288,75 @@ fallback on CUDA OOM.
 
 Details, troubleshooting, and limitations: [`docs/VISION.md`](docs/VISION.md).
 
+## Image generation (text-to-image)
+
+[`stable-diffusion-v1-5/stable-diffusion-v1-5`](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5)
+(OpenRAIL++-S) through Hugging Face diffusers, in fp16 with attention
+slicing and VAE slicing so it fits the same 4 GB GPU. Everything is driven
+by `configs/imagegen.yaml`.
+
+```bat
+:: 1. Prefetch weights (streams to disk, almost no RAM; resumable)
+python -m dipai.imagegen --download-only
+
+:: 2. Check cache / config status
+python -m dipai.imagegen --status
+
+:: 3. Generate one image (loads pipeline, writes PNG + .json sidecar)
+python -m dipai.imagegen --prompt "a red apple on a wooden table" ^
+    --width 512 --height 512 --steps 20 --seed 1234
+
+:: list images saved to outputs\images
+python -m dipai.imagegen --list-outputs
+```
+
+Measured on this machine (RTX 2050 4 GB, warm cache): pipeline load 30 s,
+**512×512 / 20 steps = 11.2 s**; first cold load ≈ 200 s while the pagefile
+is under pressure. Deterministic: the same prompt + seed + settings
+reproduces the image byte-for-byte (`SEED REPRODUCIBLE: True` in
+`scripts/real512_imagegen.py`).
+
+Each run writes `outputs\images\dipai_<timestamp>_seed<N>.png` plus a
+`.json` sidecar (prompt, negative prompt, size, steps, CFG, seed, model,
+device, dtype, wall time), and embeds prompt/model/seed as PNG text
+metadata. The Web UI's **Image generation** tab wraps the same module.
+
+Notes for this hardware:
+
+- Downloads need free disk (`min_free_disk_gb` in `configs/imagegen.yaml`);
+  an already-cached model always loads regardless of that gate.
+- Loading reads ~1.7 GB of weights — close browsers/editors first if RAM is
+  tight, or prefetch with `--download-only` while the machine is idle.
+- The smoke test (tiny 64×64, 2-step, opt-in) is
+  `set DIPAI_IMAGEGEN_SMOKE=1` then
+  `.venv\Scripts\pytest.exe tests\test_imagegen.py -q -k gpu_smoke`;
+  the realistic end-to-end script is `python scripts\real512_imagegen.py`.
+
 ## Testing
 
 ```bat
 .venv\Scripts\pytest.exe tests\ -q                                        :: full suite
 .venv\Scripts\pytest.exe tests\ -q --ignore=tests\test_vision.py          :: text-only
 .venv\Scripts\pytest.exe tests\test_vision.py -q                          :: vision (mocked)
+.venv\Scripts\pytest.exe tests\test_imagegen.py -q                        :: image gen (mocked)
 
 :: real-GPU vision smoke test (downloads/loads the model, ~1 min)
 set DIPAI_VISION_SMOKE=1
 .venv\Scripts\pytest.exe tests\test_vision.py -q -k gpu_smoke
+
+:: real-GPU image-generation smoke test (64x64, 2 steps; ~4 min first time)
+set DIPAI_IMAGEGEN_SMOKE=1
+.venv\Scripts\pytest.exe tests\test_imagegen.py -q -k gpu_smoke
 ```
 
-Current status: **200 passed, 1 skipped** (the GPU smoke test is skipped
-unless `DIPAI_VISION_SMOKE=1`). The suite covers model correctness (causal
+Current status: **256 passed, 2 skipped** (the GPU smoke tests are skipped
+unless their env vars are set). The suite covers model correctness (causal
 masking, parameter counts), tokenizer round-trips, dataset packing, training
 recovery/resume (including RNG-state determinism), generation, inference,
-hardware probing, the web UI handlers, the vision pipeline, the data pipeline
+hardware probing, the web UI handlers, the vision pipeline, the image
+generation pipeline (config validation, lazy loading, seed determinism,
+save/sidecar round-trip, disk/download gates, Web UI handlers), system
+prompts, the data pipeline
 (source-licence registry, bounded collection planning, every cleaning stage,
 prepare end-to-end), the four training modes (config rules, VRAM estimator,
 full-param save/load round-trip), evaluation (perplexity backends, delta
@@ -317,17 +384,18 @@ DIPAI/
 │   ├── generate.py         # sampling (top-k, top-p, temperature, repetition)
 │   ├── inference.py        # streaming chat engine (from_* loaders)
 │   ├── vision.py           # image understanding (SmolVLM)
+│   ├── imagegen.py         # text-to-image (Stable Diffusion 1.5)
 │   ├── chat.py             # terminal chat CLI
 │   ├── config.py           # YAML config dataclasses
 │   ├── checkpoints.py      # atomic save / load / resume
 │   ├── hardware.py         # GPU / VRAM probing
 │   └── utils.py            # logging, seeding, OOM guard
-├── webui/app.py            # Gradio app (chat + image tabs)
-├── configs/                # YAML configs (see table above; + data.yaml)
+├── webui/app.py            # Gradio app (chat + vision + imagegen tabs)
+├── configs/                # YAML configs (see table above; + data.yaml, imagegen.yaml)
 ├── scripts/                # data download, prep, helpers (Python + PowerShell)
 ├── notebooks/              # quickstart.ipynb + verify_notebook.py
-├── tests/                  # pytest suite (200 tests)
-├── docs/                   # six workflow docs + VISION.md
+├── tests/                  # pytest suite (258 tests)
+├── docs/                   # workflow docs + VISION.md + hardware audit
 └── data/                   # raw/processed data + small vision samples
 ```
 
@@ -354,6 +422,9 @@ everything regenerable is regenerated by the scripts, not committed.
   built phase by phase and the test evidence behind each claim.
 - [`docs/VISION.md`](docs/VISION.md) — image understanding: model choice,
   install, measured memory, config reference, troubleshooting, limitations.
+- [`docs/AUDIT_AND_HARDWARE_REPORT.md`](docs/AUDIT_AND_HARDWARE_REPORT.md) —
+  codebase audit plus measured hardware report (RTX 2050, RAM/disk/VRAM
+  budgeting) that the image-generation defaults are derived from.
 - [`notebooks/quickstart.ipynb`](notebooks/quickstart.ipynb) — guided tour
   (registry, dataset stats, a fast eval); verify with
   `python notebooks/verify_notebook.py`.

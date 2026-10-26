@@ -1,0 +1,16 @@
+{
+  "prompt": "make the num 1 to 10",
+  "negative_prompt": "blurry, low quality, deformed, disfigured, watermark, text, signature, extra limbs, bad anatomy, oversaturated, plastic",
+  "width": 512,
+  "height": 512,
+  "steps": 25,
+  "guidance_scale": 7.5,
+  "seed": 579103524,
+  "model_id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+  "device": "cuda",
+  "dtype": "float16",
+  "generator": "dipai.imagegen",
+  "created_utc": "2026-10-26T12:07:37.102751+00:00",
+  "estimated_vram_bytes": 3946001201,
+  "generation_seconds": 28.98
+}

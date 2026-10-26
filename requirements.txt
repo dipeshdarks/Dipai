@@ -26,5 +26,12 @@ gradio>=4.44,<6
 # Vision (image understanding via dipai.vision; SmolVLM needs transformers>=4.49)
 Pillow>=10.0
 
+# Image GENERATION (dipai.imagegen; Stable Diffusion 1.5 text-to-image).
+# diffusers 0.35.x is the newest line compatible with the transformers<5 /
+# huggingface_hub<1 pins above on Python 3.10. Model weights are downloaded
+# on first use, never at import time.
+diffusers>=0.31,<0.36
+huggingface_hub>=0.34,<1.0
+
 # Tests
 pytest>=8.0

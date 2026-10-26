@@ -397,6 +397,130 @@ class VisionConfig:
 
 
 # ---------------------------------------------------------------------------
+# Image-generation mode schema (text-to-image, separate diffusion pipeline)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ImageGenConfig:
+    """Settings for the text-to-image module (dipai.imagegen).
+
+    The image generator is a SEPARATE pretrained diffusion pipeline (Stable
+    Diffusion by default). It never modifies the text model's vocabulary,
+    checkpoints, or training: loading or failing to load it cannot affect
+    text-only training or inference.
+    """
+
+    # model selection (HF model id or a local directory)
+    model_id: str = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+
+    # device / dtype
+    device: str = "auto"             # auto | cuda | cpu
+    dtype: str = "auto"              # auto | float16 | bfloat16 | float32
+    cpu_fallback: bool = True        # fall back to CPU when CUDA loading OOMs
+
+    # loading behaviour
+    load_on_startup: bool = False    # False -> load lazily on first request
+    low_cpu_mem_usage: bool = True   # stream weights (needs accelerate)
+    local_files_only: bool = False   # True -> never contact the hub
+    enable_attention_slicing: bool = True   # trade speed for VRAM on small GPUs
+    enable_vae_slicing: bool = True         # decode VAE in slices (saves VRAM)
+    enable_vae_tiling: bool = False         # even lower VRAM, slower decode
+
+    # default generation bounds (per-request values may override within caps)
+    default_width: int = 512
+    default_height: int = 512
+    default_steps: int = 25
+    default_guidance_scale: float = 7.5
+    default_negative_prompt: str = (
+        "blurry, low quality, deformed, disfigured, watermark, text, "
+        "signature, extra limbs, bad anatomy, oversaturated, plastic"
+    )
+
+    # hard caps the UI/config will not exceed (protect 4 GB VRAM)
+    max_width: int = 768
+    max_height: int = 768
+    max_steps: int = 60
+    min_steps: int = 1
+
+    # output
+    output_dir: str = "outputs/images"
+    save_metadata: bool = True       # write a .json sidecar next to each PNG
+
+    # download / disk safety
+    min_free_disk_gb: float = 6.0    # refuse to download if less free space
+    allow_download: bool = True      # False -> local_files_only behaviour
+
+    def validate(self) -> None:
+        if not self.model_id:
+            raise ConfigError(
+                "imagegen.model_id is empty. Set a Hugging Face model id or a "
+                "local path in configs/imagegen.yaml."
+            )
+        if self.device not in ("auto", "cuda", "cpu"):
+            raise ConfigError(f"imagegen.device unsupported: {self.device}")
+        if self.dtype not in ("auto", "float16", "bfloat16", "float32"):
+            raise ConfigError(f"imagegen.dtype unsupported: {self.dtype}")
+        for name, val in (
+            ("default_width", self.default_width),
+            ("default_height", self.default_height),
+            ("max_width", self.max_width),
+            ("max_height", self.max_height),
+            ("default_steps", self.default_steps),
+            ("max_steps", self.max_steps),
+            ("min_steps", self.min_steps),
+        ):
+            if val <= 0:
+                raise ConfigError(f"imagegen.{name} must be > 0, got {val}")
+        # Dimensions must be multiples of 8 (VAE/UNet requirement) and within
+        # the configured caps.
+        for name, val in (("default_width", self.default_width),
+                          ("default_height", self.default_height),
+                          ("max_width", self.max_width),
+                          ("max_height", self.max_height)):
+            if val % 8 != 0:
+                raise ConfigError(f"imagegen.{name} must be a multiple of 8, got {val}")
+        if self.default_width > self.max_width:
+            raise ConfigError(
+                f"imagegen.default_width ({self.default_width}) exceeds "
+                f"max_width ({self.max_width})"
+            )
+        if self.default_height > self.max_height:
+            raise ConfigError(
+                f"imagegen.default_height ({self.default_height}) exceeds "
+                f"max_height ({self.max_height})"
+            )
+        if self.min_steps > self.max_steps:
+            raise ConfigError(
+                f"imagegen.min_steps ({self.min_steps}) > max_steps ({self.max_steps})"
+            )
+        if not self.min_steps <= self.default_steps <= self.max_steps:
+            raise ConfigError(
+                f"imagegen.default_steps ({self.default_steps}) outside "
+                f"[{self.min_steps}, {self.max_steps}]"
+            )
+        if self.default_guidance_scale < 0:
+            raise ConfigError("imagegen.default_guidance_scale must be >= 0")
+        if self.min_free_disk_gb < 0:
+            raise ConfigError("imagegen.min_free_disk_gb must be >= 0")
+
+    def clamp_size(self, width: int, height: int) -> tuple:
+        """Clamp a requested size into the safe/cap range, rounded to /8."""
+        def _fix(v, lo_cap, hi_cap):
+            v = max(lo_cap, min(int(v), hi_cap))
+            return max(8, (v // 8) * 8)
+        return (
+            _fix(width, 64, self.max_width),
+            _fix(height, 64, self.max_height),
+        )
+
+    def clamp_steps(self, steps: int) -> int:
+        return max(self.min_steps, min(int(steps), self.max_steps))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+# ---------------------------------------------------------------------------
 # YAML <-> dataclass helpers
 # ---------------------------------------------------------------------------
 
@@ -508,6 +632,36 @@ def default_vision_config(path: Optional[str | Path] = None) -> VisionConfig:
     built-in defaults when the file does not exist."""
     return load_vision_config(
         path if path is not None else "configs/vision.yaml", required=False
+    )
+
+
+def load_imagegen_config(
+    path: Optional[str | Path] = None, required: bool = False
+) -> ImageGenConfig:
+    """Load the image-generation config from YAML.
+
+    Missing file behaviour:
+      * required=True  -> ConfigError (strict, like the other loaders)
+      * required=False -> validated defaults, so text-only setups and tests
+                          work without a configs/imagegen.yaml present.
+    """
+    if path is None or not Path(path).exists():
+        if required and path is not None:
+            raise ConfigError(f"config file not found: {path}")
+        cfg = ImageGenConfig()
+        cfg.validate()
+        return cfg
+    raw = load_yaml(path)
+    cfg = _build(ImageGenConfig, raw)
+    cfg.validate()
+    return cfg
+
+
+def default_imagegen_config(path: Optional[str | Path] = None) -> ImageGenConfig:
+    """Image-gen config from `path` (default: configs/imagegen.yaml), or
+    validated built-in defaults when the file does not exist."""
+    return load_imagegen_config(
+        path if path is not None else "configs/imagegen.yaml", required=False
     )
 
 

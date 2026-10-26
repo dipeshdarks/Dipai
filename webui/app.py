@@ -19,17 +19,18 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # Allow running as a script from the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import gradio as gr
 
-from dipai import vision
-from dipai.config import load_vision_config
+from dipai import imagegen, vision
+from dipai.config import load_imagegen_config, load_vision_config
 from dipai.generate import GenerationError, GenerationSettings
-from dipai.inference import DIPAIEngine, EngineError
+from dipai.imagegen import ImageGenError
+from dipai.inference import ConversationSession, DIPAIEngine, EngineError
 from dipai.model_registry import default_registry
 from dipai.utils import setup_logging
 from dipai.vision import VisionError
@@ -184,6 +185,102 @@ def vision_clear():
 
 
 # ---------------------------------------------------------------------------
+# Image GENERATION handlers - module level so tests can drive them without
+# building the Gradio app. The diffusion pipeline loads ON DEMAND on the
+# first request; the text chat never pays the memory cost of SD 1.5.
+# ---------------------------------------------------------------------------
+
+_IMAGEGEN_CONFIG_PATH = "configs/imagegen.yaml"
+
+
+def _imagegen_status_line() -> str:
+    return f"`{imagegen.get_imagegen_status().line()}`"
+
+
+def imagegen_generate(
+    prompt: str,
+    negative_prompt: str,
+    width: int,
+    height: int,
+    steps: int,
+    guidance_scale: float,
+    seed: int,
+    progress: Optional[Any] = None,
+):
+    """Run real text-to-image generation; return (image, status).
+
+    Errors are returned as a visible "[error: ...]" status - never a
+    fabricated image, never an unhandled crash that would take down the UI.
+    """
+    try:
+        if not prompt or not str(prompt).strip():
+            return None, _imagegen_status_line() + " | [error: enter a prompt]"
+        cfg = load_imagegen_config(_IMAGEGEN_CONFIG_PATH, required=False)
+
+        def _frac(f: float) -> None:
+            if progress is not None:
+                try:
+                    progress(f)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        image, meta = imagegen.generate_image(
+            str(prompt).strip(),
+            config=cfg,
+            negative_prompt=str(negative_prompt).strip() if negative_prompt else None,
+            width=int(width),
+            height=int(height),
+            steps=int(steps),
+            guidance_scale=float(guidance_scale),
+            seed=int(seed),
+            progress_fn=_frac if progress is not None else None,
+        )
+        # Save automatically; metadata travels with the .json sidecar on disk.
+        path = imagegen.save_image(image, None, meta, output_dir=cfg.output_dir)
+        meta["saved_to"] = str(path)
+        status = _imagegen_status_line() + f" | saved: {path.name} | " \
+                                          f"seed {meta['seed']} | " \
+                                          f"{meta.get('generation_seconds', '?')}s"
+        return image, status
+    except ImageGenError as exc:
+        return None, _imagegen_status_line() + f" | [error: {exc}]"
+    except Exception as exc:  # noqa: BLE001 - surfaced in UI, app stays alive
+        return None, _imagegen_status_line() + f" | [error: image request failed: {exc}]"
+
+
+def imagegen_download():
+    """Explicitly download/verify model weights (status line returned).
+
+    Downloads only fetch weights to disk - the heavy pipeline load still
+    happens lazily on the first Generate, so this stays usable on
+    memory-constrained machines.
+    """
+    try:
+        cfg = load_imagegen_config(_IMAGEGEN_CONFIG_PATH, required=False)
+        path = imagegen.download_model(cfg)
+        return _imagegen_status_line() + f" | weights cached: {Path(path).name}"
+    except ImageGenError as exc:
+        return _imagegen_status_line() + f" | [error: {exc}]"
+    except Exception as exc:  # noqa: BLE001
+        return _imagegen_status_line() + f" | [error: download failed: {exc}]"
+
+
+def imagegen_download_stream():
+    """Generator wrapper: shows a loading indicator around the download."""
+    yield _imagegen_status_line() + " | downloading model weights..."
+    yield imagegen_download()
+
+
+def imagegen_unload():
+    """Free image-model VRAM back to the system."""
+    try:
+        imagegen.unload_image_gen()
+    except Exception:  # noqa: BLE001
+        pass
+    return _imagegen_status_line() + " | unloaded (VRAM freed)"
+
+
+# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
@@ -278,7 +375,69 @@ def create_app(engine: DIPAIEngine) -> gr.Blocks:
                         )
                 answer_box = gr.Markdown("", elem_id="dipai-image-answer")
 
+            # ---- image GENERATION (separate diffusion pipeline) -----------
+            with gr.Tab("Image generation"):
+                gr.Markdown(
+                    "**Text-to-image** with a local Stable Diffusion pipeline "
+                    "(separate from the text model; loads on first Generate). "
+                    "Quality depends on the model, prompt, and settings — "
+                    "prompt wording alone does not guarantee realism."
+                )
+                gen_prompt_box = gr.Textbox(
+                    placeholder="e.g. Photorealistic product photo of a glass of "
+                                "iced milk tea, soft window light, 50mm lens...",
+                    label="Prompt",
+                    lines=3,
+                    max_lines=8,
+                    elem_id="dipai-gen-prompt",
+                )
+                with gr.Row():
+                    gen_btn = gr.Button(
+                        "GENERATE", variant="primary", elem_id="dipai-generate"
+                    )
+                    dl_btn = gr.Button("DOWNLOAD MODEL", elem_id="dipai-dl-model")
+                    unload_btn = gr.Button("UNLOAD MODEL", elem_id="dipai-unload-model")
+
+                gen_status_box = gr.Markdown(
+                    _imagegen_status_line(), elem_id="dipai-gen-status"
+                )
+                gen_image_out = gr.Image(
+                    label="Generated image",
+                    type="pil",
+                    height=512,
+                    elem_id="dipai-gen-image",
+                )
+
+                with gr.Accordion("Advanced image settings", open=False):
+                    gen_neg = gr.Textbox(
+                        label="Negative prompt (what to avoid)",
+                        lines=2,
+                        value="",
+                        placeholder="blurry, low quality, deformed, watermark...",
+                    )
+                    with gr.Row():
+                        gen_width = gr.Slider(256, 1024, value=512, step=64,
+                                              label="Width")
+                        gen_height = gr.Slider(256, 1024, value=512, step=64,
+                                               label="Height")
+                    with gr.Row():
+                        gen_steps = gr.Slider(1, 60, value=25, step=1,
+                                              label="Inference steps")
+                        gen_cfg = gr.Slider(1.0, 15.0, value=7.5, step=0.5,
+                                            label="Guidance scale (CFG)")
+                    gen_seed = gr.Number(
+                        value=-1,
+                        label="Seed (-1 = random each run; >=0 = reproducible)",
+                        precision=0,
+                    )
+
         with gr.Accordion("Generation settings", open=False):
+            system_prompt_box = gr.Textbox(
+                label="System prompt (instruction for the assistant)",
+                lines=2,
+                value="",
+                placeholder="e.g. You are a concise, helpful assistant.",
+            )
             with gr.Row():
                 temperature = gr.Slider(0.0, 2.0, value=0.8, step=0.05,
                                         label="Temperature (0 = greedy)")
@@ -300,6 +459,7 @@ def create_app(engine: DIPAIEngine) -> gr.Blocks:
             top_p_v: float,
             max_new_v: int,
             rep_pen_v: float,
+            system_prompt_v: str = "",
         ):
             if not message or not message.strip():
                 yield history + [], "", "idle"
@@ -323,6 +483,14 @@ def create_app(engine: DIPAIEngine) -> gr.Blocks:
                 yield history, "", "error"
                 return
 
+            # Build a session so the engine flattens history + system prompt
+            # exactly the way the model expects.
+            session = ConversationSession()
+            session.system_prompt = (system_prompt_v or "").strip()
+            for turn in history[:-1]:  # history already includes the new user msg
+                if turn.get("role") in ("user", "assistant") and turn.get("content"):
+                    session.add(turn["role"], str(turn["content"]))
+
             stop_event.clear()
             buf = {"text": ""}
             err: Dict[str, Optional[str]] = {"exc": None}
@@ -332,11 +500,10 @@ def create_app(engine: DIPAIEngine) -> gr.Blocks:
 
             def worker() -> None:
                 try:
-                    # Session-managed path: engine handles history flattening.
                     resp = engine.generate(
                         message.strip(),
                         settings=settings,
-                        session=None,          # UI owns the visible history
+                        session=session,
                         stream_fn=on_text,
                         stop_event=stop_event.is_set,
                     )
@@ -375,14 +542,16 @@ def create_app(engine: DIPAIEngine) -> gr.Blocks:
             return "stopping..."
 
         # Wire events. The generator's outputs: chatbot, textbox, status.
+        chat_inputs = [prompt_box, chatbot, stop_state, temperature, top_k,
+                       top_p, max_new, rep_pen, system_prompt_box]
         send_event = send_btn.click(
             respond,
-            inputs=[prompt_box, chatbot, stop_state, temperature, top_k, top_p, max_new, rep_pen],
+            inputs=chat_inputs,
             outputs=[chatbot, prompt_box, status_box],
         )
         prompt_box.submit(
             respond,
-            inputs=[prompt_box, chatbot, stop_state, temperature, top_k, top_p, max_new, rep_pen],
+            inputs=chat_inputs,
             outputs=[chatbot, prompt_box, status_box],
         )
         stop_btn.click(do_stop, inputs=[stop_state], outputs=[status_box])
@@ -402,6 +571,26 @@ def create_app(engine: DIPAIEngine) -> gr.Blocks:
             outputs=[image_in, question_box, answer_box, vision_status_box],
         )
 
+        # ---- image generation wiring ------------------------------------
+        gen_event = {
+            "fn": imagegen_generate,
+            "inputs": [gen_prompt_box, gen_neg, gen_width, gen_height,
+                       gen_steps, gen_cfg, gen_seed],
+            "outputs": [gen_image_out, gen_status_box],
+        }
+        gen_btn.click(**gen_event, api_name="generate_image")
+        gen_prompt_box.submit(**gen_event)
+        dl_btn.click(
+            imagegen_download_stream,
+            inputs=[],
+            outputs=[gen_status_box],
+        )
+        unload_btn.click(
+            imagegen_unload,
+            inputs=[],
+            outputs=[gen_status_box],
+        )
+
     return demo
 
 
@@ -410,7 +599,7 @@ def create_app(engine: DIPAIEngine) -> gr.Blocks:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    global _VISION_CONFIG_PATH
+    global _VISION_CONFIG_PATH, _IMAGEGEN_CONFIG_PATH
 
     ap = argparse.ArgumentParser(description="DIPAI web chat")
     ap.add_argument("--ckpt", "-k", default="checkpoints/scratch",
@@ -431,8 +620,12 @@ def main() -> int:
     ap.add_argument("--vision-config", default="configs/vision.yaml",
                     help="vision YAML config (default: configs/vision.yaml; "
                          "missing file = built-in defaults)")
+    ap.add_argument("--imagegen-config", default="configs/imagegen.yaml",
+                    help="image-generation YAML config "
+                         "(default: configs/imagegen.yaml)")
     args = ap.parse_args()
     _VISION_CONFIG_PATH = args.vision_config
+    _IMAGEGEN_CONFIG_PATH = args.imagegen_config
 
     log = setup_logging()
 
@@ -451,7 +644,16 @@ def main() -> int:
         elif args.adapter:
             engine = DIPAIEngine.from_adapter(args.adapter, device=args.device)
         else:
-            engine = DIPAIEngine.from_checkpoint(args.ckpt, device=args.device)
+            # Default: prefer the instruction-tuned LoRA adapter when it
+            # exists (better chat quality than the scratch continuation LM);
+            # fall back to the scratch checkpoint otherwise.
+            adapter_dir = Path("checkpoints/finetune/adapter")
+            if adapter_dir.exists() and (adapter_dir / "adapter_config.json").exists():
+                log.info("defaulting to instruct adapter at %s "
+                         "(pass --ckpt/--model to override)", adapter_dir)
+                engine = DIPAIEngine.from_adapter(adapter_dir, device=args.device)
+            else:
+                engine = DIPAIEngine.from_checkpoint(args.ckpt, device=args.device)
     except EngineError as exc:
         log.error("cannot start web UI: %s", exc)
         return 2

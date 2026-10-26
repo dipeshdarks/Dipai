@@ -1,0 +1,16 @@
+{
+  "prompt": "a plain red cube on a white table",
+  "negative_prompt": "blurry, low quality, deformed, disfigured, watermark, text, signature, extra limbs, bad anatomy, oversaturated, plastic",
+  "width": 64,
+  "height": 64,
+  "steps": 2,
+  "guidance_scale": 7.5,
+  "seed": 42,
+  "model_id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+  "device": "cuda",
+  "dtype": "float16",
+  "generator": "dipai.imagegen",
+  "created_utc": "2026-10-26T11:07:59.641263+00:00",
+  "estimated_vram_bytes": 2818055547,
+  "generation_seconds": 8.41
+}

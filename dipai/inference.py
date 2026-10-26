@@ -87,10 +87,11 @@ class ConversationSession:
 
     turns: List[Dict[str, str]] = field(default_factory=list)  # {role, content}
     max_turns: int = 20
+    system_prompt: str = ""        # optional system instruction for the session
 
     def add(self, role: str, content: str) -> None:
         self.turns.append({"role": role, "content": content})
-        # Trim oldest turns to bound context length.
+        # Trim oldest turns to bound context length (never trims the system).
         if len(self.turns) > self.max_turns:
             self.turns = self.turns[-self.max_turns:]
 
@@ -106,14 +107,29 @@ class ConversationSession:
         generate() - the trailing "Assistant: " header is appended so the
         model continues as the assistant, exactly the pattern supervised
         during fine-tuning. Roles are therefore part of the model input, not
-        just UI metadata.
+        just UI metadata. A system prompt, when set, is prefixed.
         """
-        if not self.turns:
-            return ""
-        text = format_dialog(self.turns)
-        if self.turns[-1]["role"] == "user":
+        parts: List[str] = []
+        if self.system_prompt and self.system_prompt.strip():
+            parts.append(f"System: {self.system_prompt.strip()}")
+        if self.turns:
+            parts.append(format_dialog(self.turns))
+        text = "\n\n".join(parts)
+        if self.turns and self.turns[-1]["role"] == "user":
             text += "\n\nAssistant: "
         return text
+
+    def as_messages(self) -> List[Dict[str, str]]:
+        """History as an OpenAI-style message list (for HF chat templates).
+
+        The system prompt becomes a leading {'role': 'system'} message when
+        set, which is what chat-template models expect.
+        """
+        messages: List[Dict[str, str]] = []
+        if self.system_prompt and self.system_prompt.strip():
+            messages.append({"role": "system", "content": self.system_prompt.strip()})
+        messages.extend(dict(t) for t in self.turns)
+        return messages
 
     def __len__(self) -> int:
         return len(self.turns)
@@ -552,10 +568,11 @@ class DIPAIEngine:
         prompt = prompt.strip()
 
         # Build the message list (proper multi-turn formatting for instruct
-        # models; falls back to plain text if the tokenizer has no template).
+        # models; includes the session system prompt when set; falls back to
+        # plain text if the tokenizer has no template).
         messages: List[Dict[str, str]] = []
         if session is not None:
-            messages.extend(dict(t) for t in session.turns)
+            messages.extend(session.as_messages())
         messages.append({"role": "user", "content": prompt})
 
         if tok.chat_template:

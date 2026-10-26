@@ -1,0 +1,78 @@
+# DIPAI image generation - text-to-image with a pretrained diffusion model.
+# Target: RTX 2050 4 GB VRAM / ~6 GB RAM / Windows 11.
+#
+# This config is loaded by dipai.imagegen ONLY. It never touches the text
+# model's vocabulary, checkpoints, or training. If this file is missing, the
+# defaults below are used (text-only setups keep working unchanged).
+#
+# Model weights are downloaded from Hugging Face only when you run
+# dipai.imagegen (or the web UI image tab) with download enabled. Nothing is
+# fetched at import time.
+
+# ---------------------------------------------------------------------------
+# Model selection (HF model id or a local directory)
+# ---------------------------------------------------------------------------
+# stable-diffusion-v1-5/stable-diffusion-v1-5
+#   * license: CreativeML OpenRAIL++-S (see the model card for full terms)
+#   * ~4 GB download; runs in ~3.0-3.6 GB VRAM at 512x512 with fp16 +
+#     attention slicing on a 4 GB GPU
+#   * widely used, well documented, good realism baseline for products,
+#     people, and environments when prompted with camera/lighting detail
+# Alternatives (swap the id only after checking licence + VRAM):
+#   * Lykon/dreamshaper-8   - SD1.5 artistic/realistic finetune
+#   * segmind/tiny-sd       - smaller distilled SD (faster, lower quality)
+# SDXL is NOT used: it needs >6 GB VRAM and will not fit this GPU.
+model_id: stable-diffusion-v1-5/stable-diffusion-v1-5
+
+# ---------------------------------------------------------------------------
+# Device / dtype
+# ---------------------------------------------------------------------------
+device: auto            # auto | cuda | cpu  (auto = cuda when available)
+dtype: auto             # auto | float16 | bfloat16 | float32
+                        # auto = float16 on cuda, float32 on cpu
+cpu_fallback: true      # if CUDA runs out of memory, retry on CPU (much slower)
+
+# ---------------------------------------------------------------------------
+# Loading behaviour (memory-efficiency for a 4 GB GPU)
+# ---------------------------------------------------------------------------
+load_on_startup: false  # false = load on the FIRST image request
+low_cpu_mem_usage: true # stream weights from disk (low system-RAM machines)
+local_files_only: false # true = never contact huggingface.co
+enable_attention_slicing: true  # big VRAM saving; slight slowdown
+enable_vae_slicing: true        # decode VAE in slices (saves VRAM)
+enable_vae_tiling: false        # even lower VRAM, slower; enable if you OOM
+
+# ---------------------------------------------------------------------------
+# Default generation bounds
+# ---------------------------------------------------------------------------
+default_width: 512      # multiple of 8; 512 is the SD1.5 sweet spot
+default_height: 512
+default_steps: 25       # 20-30 is the usual quality/speed range
+default_guidance_scale: 7.5
+default_negative_prompt: >-
+  blurry, low quality, deformed, disfigured, watermark, text, signature,
+  extra limbs, bad anatomy, oversaturated, plastic
+
+# ---------------------------------------------------------------------------
+# Hard caps (protect the 4 GB GPU; the UI cannot exceed these)
+# ---------------------------------------------------------------------------
+max_width: 768          # above 768x768 VRAM use climbs fast on 4 GB
+max_height: 768
+max_steps: 60
+min_steps: 1
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+output_dir: outputs/images
+save_metadata: true     # write a .json sidecar (prompt, seed, settings)
+
+# ---------------------------------------------------------------------------
+# Download / disk safety
+# ---------------------------------------------------------------------------
+# Refuse to download when less free space is available than this. The initial
+# full fetch needs ~6 GB; after the cache exists, resume/repair needs only
+# ~2.5 GB. Lowered to 4.0 on this machine because the pagefile has claimed
+# several GB (raise it back to 6.0 after a reboot frees pagefile space).
+min_free_disk_gb: 4.0
+allow_download: true    # false = local_files_only behaviour (no network)

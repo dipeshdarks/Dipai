@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "inputs": [
+    "data\\raw\\web\\*.jsonl"
+  ],
+  "output": "data\\clean\\clean.jsonl",
+  "total_in": 500,
+  "total_out": 479,
+  "kept_ratio": 0.958,
+  "tokens_estimated": 521443,
+  "stages": [
+    {
+      "name": "normalize",
+      "kept": 500,
+      "dropped": 0,
+      "modified": 38,
+      "detail": {}
+    },
+    {
+      "name": "drop_empty",
+      "kept": 500,
+      "dropped": 0,
+      "modified": 0,
+      "detail": {}
+    },
+    {
+      "name": "encoding_filter",
+      "kept": 500,
+      "dropped": 0,
+      "modified": 0,
+      "detail": {}
+    },
+    {
+      "name": "length_filter",
+      "kept": 500,
+      "dropped": 0,
+      "modified": 0,
+      "detail": {}
+    },
+    {
+      "name": "boilerplate",
+      "kept": 480,
+      "dropped": 20,
+      "modified": 0,
+      "detail": {
+        "bullet_list": 19,
+        "one_line_wall": 1
+      }
+    },
+    {
+      "name": "language",
+      "kept": 479,
+      "dropped": 1,
+      "modified": 0,
+      "detail": {
+        "nl": 1
+      }
+    },
+    {
+      "name": "dedup_exact",
+      "kept": 479,
+      "dropped": 0,
+      "modified": 0,
+      "detail": {}
+    },
+    {
+      "name": "dedup_near",
+      "kept": 479,
+      "dropped": 0,
+      "modified": 0,
+      "detail": {}
+    },
+    {
+      "name": "quality",
+      "kept": 479,
+      "dropped": 0,
+      "modified": 0,
+      "detail": {}
+    },
+    {
+      "name": "pii",
+      "kept": 0,
+      "dropped": 0,
+      "modified": 32,
+      "detail": {}
+    }
+  ],
+  "quality_hist": {
+    "70-79": 450,
+    "60-69": 26,
+    "50-59": 3
+  },
+  "pii_detected": {
+    "email": 21,
+    "phone": 53,
+    "credit_card": 5
+  },
+  "config": {
+    "input_paths": [
+      "data\\raw\\web\\*.jsonl"
+    ],
+    "output_path": "data\\clean\\clean.jsonl",
+    "report_path": "data\\clean\\report.json",
+    "text_key": "text",
+    "normalize": true,
+    "drop_empty": true,
+    "encoding_filter": true,
+    "length_filter": true,
+    "boilerplate": true,
+    "language": true,
+    "dedup_exact": true,
+    "dedup_near": false,
+    "quality": true,
+    "pii": true,
+    "pii_redact": true,
+    "min_chars": 100,
+    "max_chars": 100000,
+    "languages": [
+      "en"
+    ],
+    "max_replacement_ratio": 0.02,
+    "quality_threshold": 0.35,
+    "dedup_max_entries": 500000,
+    "near_dup_num_perm": 64,
+    "near_dup_bands": 16,
+    "near_dup_threshold": 0.8,
+    "max_docs": 0,
+    "seed": 1337
+  }
+}
